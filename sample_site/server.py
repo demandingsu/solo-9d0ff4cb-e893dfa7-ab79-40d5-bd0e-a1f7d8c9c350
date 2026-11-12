@@ -10,9 +10,19 @@
   链 G：同一项目两个独立首次公告（保持两条独立链）
   公告 H：可通过 /fail-toggle 控制详情页返回 500，验证失败保留上次结果
 
+英文目录（/en/announcements）用于演示双语核对，与中文同批但故意制造差异：
+  A-003：英文截标时间晚一天（deadline 差异）
+  B-003：中文为撤销公告，英文误译为 Correction Notice（公告类型差异）
+  F-001：英文项目编号误写为 PRJ-F-EN（项目编号差异）
+  H-001：英文目录缺失（only_in_zh）；EN-001：英文目录独有（only_in_en）
+  D-001：开启 /en/duplicate-toggle 后出现同号双链接（待核实，不配对）
+  目录变动：开启 /en/mutate-toggle 后英文目录每次请求交替增删 EN-900
+
 控制接口：
-  GET /fail-toggle?enabled=1|0   开关 H-001 详情页的 500 故障
-  GET /fail-status               查询当前故障开关
+  GET /fail-toggle?enabled=1|0&notice=H-001   开关指定公告详情页的 500 故障
+  GET /fail-status                             查询 H-001 故障开关
+  GET /en/duplicate-toggle?enabled=1|0         开关英文目录 D-001 同号双链接
+  GET /en/mutate-toggle?enabled=1|0            开关英文目录逐次变动
 """
 from __future__ import annotations
 
@@ -93,8 +103,86 @@ NOTICES: list[dict] = [
 
 NOTICE_BY_NO = {n["no"]: n for n in NOTICES}
 
-# 运行期故障开关（内存态，重启容器即恢复）
-FAIL_ENABLED = {"H-001": False}
+# 英文公告：与中文同批，但故意制造若干译文差异，用于演示双语核对
+EN_NOTICES: list[dict] = [
+    {"no": "A-001", "project": "PRJ-A", "type": "First Notice",
+     "publish": "Oct 20, 2026 09:00", "deadline": "Nov 20, 2026 09:30",
+     "ref": ""},
+    {"no": "A-002", "project": "PRJ-A", "type": "Correction Notice",
+     "publish": "Oct 25, 2026 14:00", "deadline": "",
+     "ref": "A-001"},
+    # 差异①：英文截标时间晚一天（中文为 2026-11-25 15:00:00）
+    {"no": "A-003", "project": "PRJ-A", "type": "Correction Notice",
+     "publish": "Nov 1, 2026 10:00", "deadline": "Nov 26, 2026 15:00",
+     "ref": "A-002"},
+
+    {"no": "B-001", "project": "PRJ-B", "type": "First Notice",
+     "publish": "Oct 21, 2026 09:00", "deadline": "Nov 21, 2026 09:30",
+     "ref": ""},
+    {"no": "B-002", "project": "PRJ-B", "type": "Correction Notice",
+     "publish": "Oct 26, 2026 14:00", "deadline": "Nov 22, 2026 09:30",
+     "ref": "B-001"},
+    # 差异②：中文为撤销公告，英文误译为更正
+    {"no": "B-003", "project": "PRJ-B", "type": "Correction Notice",
+     "publish": "Oct 28, 2026 16:00", "deadline": "",
+     "ref": "B-002"},
+
+    {"no": "C-001", "project": "PRJ-C", "type": "First Notice",
+     "publish": "Oct 22, 2026 09:00", "deadline": "Nov 22, 2026 09:30",
+     "ref": ""},
+    {"no": "C-002", "project": "PRJ-C", "type": "Correction Notice",
+     "publish": "Oct 27, 2026 10:00", "deadline": "Nov 23, 2026 09:30",
+     "ref": "C-001"},
+    {"no": "C-003", "project": "PRJ-C", "type": "Correction Notice",
+     "publish": "Oct 27, 2026 15:00", "deadline": "Nov 24, 2026 09:30",
+     "ref": "C-001"},
+
+    {"no": "D-001", "project": "PRJ-D", "type": "Correction Notice",
+     "publish": "Oct 23, 2026 09:00", "deadline": "Nov 23, 2026 09:30",
+     "ref": "X-999"},
+
+    {"no": "E-001", "project": "PRJ-E", "type": "Correction Notice",
+     "publish": "Oct 24, 2026 09:00", "deadline": "Nov 24, 2026 09:30",
+     "ref": "E-002"},
+    {"no": "E-002", "project": "PRJ-E", "type": "Correction Notice",
+     "publish": "Oct 24, 2026 10:00", "deadline": "Nov 25, 2026 09:30",
+     "ref": "E-001"},
+
+    # 差异③：英文项目编号误写（中文为 PRJ-F）
+    {"no": "F-001", "project": "PRJ-F-EN", "type": "Correction Notice",
+     "publish": "Oct 25, 2026 09:00", "deadline": "Nov 26, 2026 09:30",
+     "ref": ""},
+
+    {"no": "G-001", "project": "PRJ-G", "type": "First Notice",
+     "publish": "Oct 26, 2026 09:00", "deadline": "Nov 26, 2026 09:30",
+     "ref": ""},
+    {"no": "G-101", "project": "PRJ-G", "type": "First Notice",
+     "publish": "Oct 27, 2026 09:00", "deadline": "Nov 27, 2026 09:30",
+     "ref": ""},
+    {"no": "G-102", "project": "PRJ-G", "type": "Correction Notice",
+     "publish": "Oct 29, 2026 09:00", "deadline": "Nov 28, 2026 09:30",
+     "ref": "G-101"},
+
+    # 英文目录缺 H-001（only_in_zh），另多一条 EN-001（only_in_en）
+    {"no": "EN-001", "project": "PRJ-EN", "type": "First Notice",
+     "publish": "Nov 2, 2026 09:00", "deadline": "Dec 2, 2026 09:30",
+     "ref": ""},
+]
+
+EN_NOTICE_BY_NO = {n["no"]: n for n in EN_NOTICES}
+
+# 目录变动演示时交替增删的公告
+EN_EXTRA_NOTICE = {"no": "EN-900", "project": "PRJ-X", "type": "First Notice",
+                   "publish": "Nov 5, 2026 09:00", "deadline": "Dec 5, 2026 09:30",
+                   "ref": ""}
+
+# 英文详情页可渲染的公告（含目录变动演示用的 EN-900）
+EN_DETAIL_PAGES = {**EN_NOTICE_BY_NO, EN_EXTRA_NOTICE["no"]: EN_EXTRA_NOTICE}
+
+# 运行期开关（内存态，重启容器即恢复）
+FAIL_ENABLED = {"H-001": False}          # 公告编号 -> 详情页是否返回 500
+DUPLICATE_LINKS = {"enabled": False}     # 英文目录 D-001 同号双链接
+MUTATE_LISTING = {"enabled": False, "tick": 0}  # 英文目录逐次变动
 
 PAGE_CSS = """
 body { font-family: sans-serif; margin: 2em; color: #222; }
@@ -156,6 +244,59 @@ def render_detail(no: str) -> str:
 </body></html>"""
 
 
+def _en_row(n: dict, href_no: str | None = None) -> str:
+    href = href_no or n["no"]
+    return (
+        f'<tr><td><a href="/en/notice/{escape(href)}">{escape(n["no"])}</a></td>'
+        f'<td>{escape(n["project"])}</td><td>{escape(n["type"])}</td>'
+        f'<td>{escape(n["publish"])}</td></tr>'
+    )
+
+
+def render_en_list() -> str:
+    rows = [_en_row(n) for n in EN_NOTICES]
+    if DUPLICATE_LINKS["enabled"]:
+        # 同号不同链接：D-001 出现第二个入口，指向另一个详情地址
+        rows.insert(10, _en_row(EN_NOTICE_BY_NO["D-001"], href_no="D-001-alt"))
+    if MUTATE_LISTING["enabled"]:
+        # 每次请求交替增删一条，模拟核对期间目录发生变动
+        MUTATE_LISTING["tick"] += 1
+        if MUTATE_LISTING["tick"] % 2 == 1:
+            rows.append(_en_row(EN_EXTRA_NOTICE))
+    body = "\n".join(rows)
+    return f"""<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<title>Procurement Notices</title><style>{PAGE_CSS}</style></head>
+<body>
+<h1>Procurement Notices (Sample Site, EN)</h1>
+<p class="meta">{len(rows)} notices · for bilingual check demo</p>
+<table class="announcement-list">
+<thead><tr><th>Notice No</th><th>Project No</th><th>Type</th><th>Publish Time</th></tr></thead>
+<tbody>{body}</tbody>
+</table>
+</body></html>"""
+
+
+def render_en_detail(no: str) -> str:
+    n = EN_DETAIL_PAGES[no]
+    rows = "".join([
+        _row("Notice No", n["no"]),
+        _row("Project No", n["project"]),
+        _row("Notice Type", n["type"]),
+        _row("Publish Time", n["publish"]),
+        _row("Bid Deadline", n["deadline"]),
+        _row("Reference No", n["ref"]),
+    ])
+    return f"""<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<title>Notice {escape(n['no'])}</title><style>{PAGE_CSS}</style></head>
+<body>
+<h1>Notice Detail {escape(n['no'])}</h1>
+<p><a href="/en/announcements">← Back to list</a></p>
+<table class="detail-table"><tbody>{rows}</tbody></table>
+</body></html>"""
+
+
 class Handler(BaseHTTPRequestHandler):
     def _send(self, body: str, status: int = 200,
               content_type: str = "text/html; charset=utf-8") -> None:
@@ -175,19 +316,44 @@ class Handler(BaseHTTPRequestHandler):
             self._send(render_list())
             return
 
+        if path == "/en/announcements":
+            self._send(render_en_list())
+            return
+
         if path == "/fail-toggle":
             enabled = (query.get("enabled", ["0"])[0] in {"1", "true", "yes"})
-            FAIL_ENABLED["H-001"] = enabled
+            notice = query.get("notice", ["H-001"])[0]
+            FAIL_ENABLED[notice] = enabled
+            self._send(
+                f'{{"notice": "{escape(notice)}", '
+                f'"fail_enabled": {str(enabled).lower()}}}',
+                content_type="application/json; charset=utf-8",
+            )
+            return
+
+        if path == "/fail-status":
+            enabled = FAIL_ENABLED.get("H-001", False)
             self._send(
                 f'{{"H-001_fail_enabled": {str(enabled).lower()}}}',
                 content_type="application/json; charset=utf-8",
             )
             return
 
-        if path == "/fail-status":
-            enabled = FAIL_ENABLED["H-001"]
+        if path == "/en/duplicate-toggle":
+            enabled = (query.get("enabled", ["0"])[0] in {"1", "true", "yes"})
+            DUPLICATE_LINKS["enabled"] = enabled
             self._send(
-                f'{{"H-001_fail_enabled": {str(enabled).lower()}}}',
+                f'{{"en_duplicate_links_enabled": {str(enabled).lower()}}}',
+                content_type="application/json; charset=utf-8",
+            )
+            return
+
+        if path == "/en/mutate-toggle":
+            enabled = (query.get("enabled", ["0"])[0] in {"1", "true", "yes"})
+            MUTATE_LISTING["enabled"] = enabled
+            MUTATE_LISTING["tick"] = 0
+            self._send(
+                f'{{"en_listing_mutate_enabled": {str(enabled).lower()}}}',
                 content_type="application/json; charset=utf-8",
             )
             return
@@ -202,6 +368,21 @@ class Handler(BaseHTTPRequestHandler):
                 self._send("<h1>500 服务器内部错误（模拟故障）</h1>", status=500)
                 return
             self._send(render_detail(no))
+            return
+
+        if path.startswith("/en/notice/"):
+            no = path.rsplit("/", 1)[-1]
+            notice = EN_DETAIL_PAGES.get(no)
+            if notice is None and no.endswith("-alt"):
+                notice = EN_DETAIL_PAGES.get(no[: -len("-alt")])
+            if notice is None:
+                self._send("<h1>404 Notice Not Found</h1>", status=404)
+                return
+            if FAIL_ENABLED.get(notice["no"]):
+                self._send("<h1>500 Internal Server Error (simulated)</h1>",
+                           status=500)
+                return
+            self._send(render_en_detail(notice["no"]))
             return
 
         self._send("<h1>404</h1>", status=404)

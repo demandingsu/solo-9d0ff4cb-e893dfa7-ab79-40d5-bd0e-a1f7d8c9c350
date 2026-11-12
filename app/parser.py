@@ -12,21 +12,40 @@ from urllib.parse import urljoin
 
 from bs4 import BeautifulSoup
 
-# 公告类型关键词 -> 规范类型
+# 公告类型关键词 -> 规范类型（中英文，匹配时不区分大小写；
+# 顺序即优先级：撤销 > 更正 > 首次）
 TYPE_KEYWORDS: list[tuple[str, str]] = [
     ("撤销", "revocation"),
     ("更正", "correction"),
     ("首次", "first"),
+    ("revocation", "revocation"),
+    ("revoked", "revocation"),
+    ("cancellation", "revocation"),
+    ("cancelled", "revocation"),
+    ("canceled", "revocation"),
+    ("withdrawal", "revocation"),
+    ("withdrawn", "revocation"),
+    ("correction", "correction"),
+    ("corrected", "correction"),
+    ("amendment", "correction"),
+    ("amended", "correction"),
+    ("clarification", "correction"),
+    ("modification", "correction"),
+    ("first", "first"),
+    ("initial", "first"),
+    ("original", "first"),
 ]
 
-# 详情页字段标签别名（标签文本去掉冒号/空白后匹配）
+# 详情页字段标签别名（标签文本去掉冒号/空白后匹配，中英文）
 FIELD_ALIASES: dict[str, tuple[str, ...]] = {
-    "notice_no": ("公告编号",),
-    "project_no": ("项目编号",),
-    "notice_type": ("公告类型", "类型"),
-    "publish_time": ("发布时间",),
-    "deadline": ("投标截止时间", "截止时间"),
-    "ref_notice_no": ("引用编号",),
+    "notice_no": ("公告编号", "Notice No", "Notice No.", "Announcement No"),
+    "project_no": ("项目编号", "Project No", "Project No."),
+    "notice_type": ("公告类型", "类型", "Notice Type", "Type"),
+    "publish_time": ("发布时间", "Publish Time", "Published", "Published At"),
+    "deadline": ("投标截止时间", "截止时间", "Bid Deadline",
+                 "Submission Deadline", "Deadline"),
+    "ref_notice_no": ("引用编号", "Reference No", "Reference No.",
+                      "Ref Notice No"),
 }
 
 
@@ -49,6 +68,19 @@ class NoticeDetail:
     source_url: Optional[str] = None
 
 
+@dataclass
+class RawNoticeDetail:
+    """详情页原始字段（公告类型与截止时间保留页面原文，未归一化）。
+
+    供双语核对使用：比较时按各自语言归一化，报告时展示页面原值。
+    """
+    notice_no: str
+    project_no: Optional[str] = None
+    notice_type: Optional[str] = None
+    deadline: Optional[str] = None
+    source_url: Optional[str] = None
+
+
 # 站点对空字段常用的占位符，解析时一律视为空值
 EMPTY_MARKERS = {"—", "–", "-", "/", "无", "空", "暂无"}
 
@@ -63,11 +95,12 @@ def _clean(text: Optional[str]) -> Optional[str]:
 
 
 def normalize_type(raw: Optional[str]) -> Optional[str]:
-    """将中文类型标签映射为 first / correction / revocation。"""
+    """将中/英文类型标签映射为 first / correction / revocation。"""
     if not raw:
         return None
+    lowered = raw.lower()
     for keyword, canonical in TYPE_KEYWORDS:
-        if keyword in raw:
+        if keyword in lowered:
             return canonical
     return None
 
@@ -81,6 +114,14 @@ _DT_PATTERNS = (
     "%Y/%m/%d",
     "%Y年%m月%d日 %H:%M",
     "%Y年%m月%d日",
+    # 英文页面常见写法
+    "%b %d, %Y %H:%M",      # Nov 20, 2026 09:30
+    "%b %d, %Y",
+    "%B %d, %Y %H:%M",      # November 20, 2026 09:30
+    "%B %d, %Y",
+    "%d %b %Y %H:%M",       # 20 Nov 2026 09:30
+    "%m/%d/%Y %H:%M",       # 11/20/2026 09:30（美式）
+    "%m/%d/%Y",
 )
 
 
@@ -101,11 +142,14 @@ def normalize_datetime(raw: Optional[str]) -> Optional[str]:
     return value
 
 
-def parse_list(html: str, list_url: str) -> list[ListedNotice]:
-    """解析列表页，返回公告编号与详情页绝对 URL。"""
+def parse_list_entries(html: str, list_url: str) -> list[ListedNotice]:
+    """解析列表页全部条目，**不去重**。
+
+    双语核对需要识别「同一编号指向不同链接」的歧义条目，因此保留重复项；
+    常规同步请使用 parse_list（同号取第一条）。
+    """
     soup = BeautifulSoup(html, "html.parser")
     results: list[ListedNotice] = []
-    seen: set[str] = set()
     for link in soup.select("table.announcement-list a, ul.announcement-list a"):
         href = link.get("href")
         label = _clean(link.get_text())
@@ -114,13 +158,24 @@ def parse_list(html: str, list_url: str) -> list[ListedNotice]:
         match = re.search(r"([A-Za-z0-9\-_]+)", label)
         if not match:
             continue
-        notice_no = match.group(1)
-        if notice_no in seen:
-            continue
-        seen.add(notice_no)
         results.append(
-            ListedNotice(notice_no=notice_no, detail_url=urljoin(list_url, href))
+            ListedNotice(
+                notice_no=match.group(1),
+                detail_url=urljoin(list_url, href),
+            )
         )
+    return results
+
+
+def parse_list(html: str, list_url: str) -> list[ListedNotice]:
+    """解析列表页，返回公告编号与详情页绝对 URL（同号取第一条）。"""
+    results: list[ListedNotice] = []
+    seen: set[str] = set()
+    for item in parse_list_entries(html, list_url):
+        if item.notice_no in seen:
+            continue
+        seen.add(item.notice_no)
+        results.append(item)
     return results
 
 
@@ -164,6 +219,23 @@ def parse_detail(html: str, source_url: str) -> NoticeDetail:
         publish_time=normalize_datetime(_pick(fields, "publish_time")),
         deadline=normalize_datetime(_pick(fields, "deadline")),
         ref_notice_no=_pick(fields, "ref_notice_no"),
+        source_url=source_url,
+    )
+    if not detail.notice_no:
+        raise ValueError("详情页缺少公告编号字段")
+    return detail
+
+
+def parse_detail_raw(html: str, source_url: str) -> RawNoticeDetail:
+    """解析公告详情页，保留公告类型与截止时间的页面原文（不归一化）。"""
+    soup = BeautifulSoup(html, "html.parser")
+    fields = _field_map(soup)
+
+    detail = RawNoticeDetail(
+        notice_no=_pick(fields, "notice_no") or "",
+        project_no=_pick(fields, "project_no"),
+        notice_type=_pick(fields, "notice_type"),
+        deadline=_pick(fields, "deadline"),
         source_url=source_url,
     )
     if not detail.notice_no:

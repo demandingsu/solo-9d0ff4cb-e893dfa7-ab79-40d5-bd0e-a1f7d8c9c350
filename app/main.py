@@ -7,6 +7,7 @@ POST /api/v1/sync                  同步指定列表页及其详情页
 GET  /api/v1/chains                查询全部引用链与孤立异常公告
 GET  /api/v1/announcements/{no}    查询单条公告
 GET  /api/v1/sync-runs             查询同步执行记录
+POST /api/v1/bilingual-check       中英文目录双语核对（实时抓取，不入库）
 """
 from __future__ import annotations
 
@@ -15,9 +16,11 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
 
-from . import db, service
+from . import bilingual, db, service
 from .models import (
     AnnouncementItem,
+    BilingualCheckRequest,
+    BilingualCheckResponse,
     Chain,
     OrphanAnnouncement,
     QueryResponse,
@@ -51,6 +54,14 @@ def run_sync(payload: SyncRequest) -> dict:
     if not payload.list_url.startswith(("http://", "https://")):
         raise HTTPException(status_code=400, detail="list_url 必须是 http(s) URL")
     return service.sync_list(payload.list_url)
+
+
+@app.post("/api/v1/bilingual-check", response_model=BilingualCheckResponse)
+def run_bilingual_check(payload: BilingualCheckRequest) -> dict:
+    for url in (payload.zh_list_url, payload.en_list_url):
+        if not url.startswith(("http://", "https://")):
+            raise HTTPException(status_code=400, detail="目录 URL 必须是 http(s) URL")
+    return bilingual.check_bilingual(payload.zh_list_url, payload.en_list_url)
 
 
 def _loads(raw: str | None) -> list[str]:
